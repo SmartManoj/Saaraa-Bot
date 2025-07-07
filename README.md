@@ -17,10 +17,16 @@ Meet சாரா 👸, your intelligent Tamil-English speaking royal companion 
 - **Multiple Formats**: Supports JPG, PNG, GIF, WEBP, and image documents
 
 ### 💬 Smart Conversations
-- **Unified Handler**: Single system handles all message types (images, text, documents)
+- **Unified Handler**: Single system handles all message types (images, text, documents, voice)
 - **Context Awareness**: Understands conversation flow and references previous messages
 - **Typing Indicators**: Shows natural typing animation instead of editing messages
 - **One-Line Responses**: Concise, witty, and to-the-point replies
+
+### 🎙️ Voice Message Support
+- **Gemini-Powered**: Direct audio transcription and response using Gemini AI
+- **No External Dependencies**: No need for OpenAI Whisper or additional audio APIs
+- **Conversational**: Responds naturally to voice messages in சாரா's style
+- **Memory Integration**: Voice messages are part of conversation history
 
 ## 🚀 Setup
 

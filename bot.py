@@ -125,6 +125,52 @@ Send me anything - I don't judge... much. 😏
         else:
             return f"You're சாரா 👸. {personality_instruction} Respond in Kongu Colloquial Tamil mixed with English. Respond in EXACTLY ONE LINE ONLY. Follow KISS principle - Keep It Simple, Stupid! If there are commands/code, extract them using markdown (```). Be direct and useful. Consider our conversation context if relevant."
     
+    async def transcribe_audio_with_gemini(self, audio_bytes: bytes, user_id: int, user_info: dict, mime_type: str = "audio/ogg") -> str:
+        """Transcribe and respond to audio using Gemini directly."""
+        try:
+            logger.info(f"Transcribing audio with MIME type: {mime_type}, size: {len(audio_bytes)} bytes")
+            
+            # Check file size limit (1MB for litellm compatibility)
+            if len(audio_bytes) > 5 * 1024 * 1024:
+                return "Audio file too big, கண்ணே! Keep it under 1MB for now."
+            
+            # Use data URL format that's compatible with litellm
+            audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+            data_url = f"data:{mime_type};base64,{audio_base64}"
+            
+            # Use image_url format which litellm converts properly for Gemini
+            messages = [{
+                "role": "user", 
+                "content": [
+                    {"type": "text", "text": f"{self.get_saaraa_prompt('general', user_info)} Listen to this audio and transcribe"},
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": data_url
+                        }
+                    }
+                ]
+            }]
+            
+            response = completion(
+                model="gemini/gemini-1.5-flash",
+                messages=messages,
+                max_tokens=200  # Shorter response to avoid 413 errors
+            )
+            
+            result = response.choices[0].message.content
+            
+            # Add to conversation history
+            self.add_to_conversation(user_id, "user", "[Sent voice message]")
+            self.add_to_conversation(user_id, "assistant", result)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error transcribing audio with Gemini: {e}")
+            # Fallback message
+            return "Audio processing-la problem, மனோஜ். Maybe try a shorter voice message?"
+
     async def send_with_markdown(self, update: Update, text: str):
         """Send message with markdown formatting, fallback to plain text if it fails."""
         try:
@@ -132,8 +178,6 @@ Send me anything - I don't judge... much. 😏
         except Exception:
             # Fallback to plain text if markdown fails
             await update.message.reply_text(text)
-
-
 
     async def process_with_gemini(self, content_type: str, content, user_id: int, user_info: dict) -> str:
         """Unified Gemini processing for all content types."""
@@ -159,17 +203,25 @@ Send me anything - I don't judge... much. 😏
                 })
                 # Add to conversation history
                 self.add_to_conversation(user_id, "user", "[Sent an image]")
+            elif content_type == "audio":
+                # Add transcribed audio message
+                messages.append({
+                    "role": "user",
+                    "content": f"{self.get_saaraa_prompt('general', user_info)} Transcribed audio: {content}"
+                })
+                # Add to conversation history
+                self.add_to_conversation(user_id, "user", f"[Audio transcribed]: {content}")
             else:  # text
                 # Add text message
                 messages.append({
                     "role": "user",
-                                         "content": f"{self.get_saaraa_prompt('general', user_info)} Message: {content}"
+                    "content": f"{self.get_saaraa_prompt('general', user_info)} Message: {content}"
                 })
                 # Add to conversation history
                 self.add_to_conversation(user_id, "user", content)
             
             response = completion(
-                model="gemini/gemini-1.5-flash",
+                model="gemini/gemini-2.5-flash",
                 messages=messages,
                 max_tokens=500
             )
@@ -191,6 +243,25 @@ Send me anything - I don't judge... much. 😏
             user_id = update.effective_user.id
             user = update.effective_user
             
+            # Comprehensive logging
+            logger.info(f"=== NEW MESSAGE FROM {user.first_name} ===")
+            logger.info(f"Message has photo: {bool(update.message.photo)}")
+            logger.info(f"Message has document: {bool(update.message.document)}")
+            logger.info(f"Message has voice: {bool(update.message.voice)}")
+            logger.info(f"Message has audio: {bool(update.message.audio)}")
+            logger.info(f"Message has text: {bool(update.message.text)}")
+            
+            if update.message.document:
+                logger.info(f"Document filename: {update.message.document.file_name}")
+                logger.info(f"Document MIME type: {update.message.document.mime_type}")
+                logger.info(f"Document size: {update.message.document.file_size}")
+            
+            if update.message.audio:
+                logger.info(f"Audio filename: {update.message.audio.file_name}")
+                logger.info(f"Audio MIME type: {update.message.audio.mime_type}")
+                logger.info(f"Audio duration: {update.message.audio.duration}s")
+                logger.info(f"Audio size: {update.message.audio.file_size}")
+            
             # Collect user info
             full_name = user.first_name
             if user.last_name:
@@ -210,6 +281,7 @@ Send me anything - I don't judge... much. 😏
             # Handle different message types
             if update.message.photo:
                 # Handle photo
+                logger.info("🖼️ Processing photo message")
                 photo = update.message.photo[-1]
                 file = await context.bot.get_file(photo.file_id)
                 image_bytes = await file.download_as_bytearray()
@@ -217,16 +289,43 @@ Send me anything - I don't judge... much. 😏
                 
             elif update.message.document and update.message.document.mime_type and update.message.document.mime_type.startswith('image/'):
                 # Handle image document
+                logger.info("🖼️ Processing image document")
                 file = await context.bot.get_file(update.message.document.file_id)
                 image_bytes = await file.download_as_bytearray()
                 result = await self.process_with_gemini("image", bytes(image_bytes), user_id, user_info)
                 
             elif update.message.text and not update.message.text.startswith('/'):
                 # Handle text (skip commands)
+                logger.info("💬 Processing text message")
                 result = await self.process_with_gemini("text", update.message.text, user_id, user_info)
                 
+            elif update.message.voice:
+                # Handle voice messages
+                logger.info("🎙️ Processing voice message")
+                file = await context.bot.get_file(update.message.voice.file_id)
+                audio_bytes = await file.download_as_bytearray()
+                result = await self.transcribe_audio_with_gemini(bytes(audio_bytes), user_id, user_info, "audio/ogg")
+                
+            elif update.message.audio:
+                # Handle audio messages (audio files sent as audio, not documents)
+                logger.info(f"🎵 Processing audio message: {update.message.audio.file_name}, duration: {update.message.audio.duration}s")
+                file = await context.bot.get_file(update.message.audio.file_id)
+                audio_bytes = await file.download_as_bytearray()
+                result = await self.transcribe_audio_with_gemini(bytes(audio_bytes), user_id, user_info, update.message.audio.mime_type or "audio/mp4")
+                
+            elif update.message.document and update.message.document.mime_type and update.message.document.mime_type.startswith('audio/'):
+                # Handle audio documents (m4a, mp3, wav, etc.)
+                logger.info(f"🎵 Processing audio document: {update.message.document.file_name}, MIME: {update.message.document.mime_type}")
+                file = await context.bot.get_file(update.message.document.file_id)
+                audio_bytes = await file.download_as_bytearray()
+                result = await self.transcribe_audio_with_gemini(bytes(audio_bytes), user_id, user_info, update.message.document.mime_type)
+                
             elif update.message.document:
+                logger.info("📄 Processing other document")
                 result = "That's not an image, மனோஜ்."
+            
+            else:
+                logger.info("❓ No handler found for this message type")
             
             if result:
                 await self.send_with_markdown(update, result)
@@ -234,6 +333,22 @@ Send me anything - I don't judge... much. 😏
         except Exception as e:
             logger.error(f"Error handling message: {e}")
             await update.message.reply_text(f"Something broke, மனோஜ். {str(e)}")
+
+    async def debug_unhandled_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Debug handler to catch messages not handled by main handler."""
+        logger.warning(f"🚨 UNHANDLED MESSAGE TYPE from {update.effective_user.first_name}")
+        logger.warning(f"Message type details:")
+        logger.warning(f"  - Photo: {bool(update.message.photo)}")
+        logger.warning(f"  - Document: {bool(update.message.document)}")
+        logger.warning(f"  - Voice: {bool(update.message.voice)}")
+        logger.warning(f"  - Audio: {bool(update.message.audio)}")
+        logger.warning(f"  - Video: {bool(update.message.video)}")
+        logger.warning(f"  - Text: {bool(update.message.text)}")
+        logger.warning(f"  - Sticker: {bool(update.message.sticker)}")
+        logger.warning(f"  - Animation: {bool(update.message.animation)}")
+        if update.message.document:
+            logger.warning(f"  - Document MIME: {update.message.document.mime_type}")
+            logger.warning(f"  - Document name: {update.message.document.file_name}")
 
     def run(self):
         """Start the bot."""
@@ -243,7 +358,9 @@ Send me anything - I don't judge... much. 😏
         # Add handlers
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help_command))
-        application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL | (filters.TEXT & ~filters.COMMAND), self.handle_message))
+        application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL | filters.VOICE | filters.AUDIO | (filters.TEXT & ~filters.COMMAND), self.handle_message))
+        # Catch-all handler for debugging
+        application.add_handler(MessageHandler(filters.ALL, self.debug_unhandled_message))
 
         # Start polling
         logger.info("Starting bot...")
