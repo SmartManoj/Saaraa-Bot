@@ -4,7 +4,10 @@ import logging
 from io import BytesIO
 import base64
 import time
+import subprocess
+import re
 from datetime import datetime, timedelta
+from pymsgbox import prompt
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from litellm import completion
@@ -16,12 +19,9 @@ from dotenv import load_dotenv
 load_dotenv(override=True)
 
 # Configure logging
-logging.basicConfig(
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO
-)
 logger = logging.getLogger(__name__)
-
+logger.setLevel(logging.INFO)
+logger.addHandler(logging.StreamHandler())
 class SaaraaBot:
     def __init__(self, bot_token: str, gemini_api_key: str):
         self.bot_token = bot_token
@@ -153,7 +153,7 @@ Send me anything - I don't judge... much. 😏
             }]
             
             response = completion(
-                model="gemini/gemini-1.5-flash",
+                model="gemini/gemini-2.5-flash",
                 messages=messages,
                 max_tokens=200  # Shorter response to avoid 413 errors
             )
@@ -169,15 +169,19 @@ Send me anything - I don't judge... much. 😏
         except Exception as e:
             logger.error(f"Error transcribing audio with Gemini: {e}")
             # Fallback message
-            return "Audio processing-la problem, மனோஜ். Maybe try a shorter voice message?"
+            return "Audio processing-la problem. Maybe try a shorter voice message?"
 
     async def send_with_markdown(self, update: Update, text: str):
         """Send message with markdown formatting, fallback to plain text if it fails."""
         try:
+            logger.info(f"📤 Attempting to send message with markdown")
             await update.message.reply_text(text, parse_mode='Markdown')
-        except Exception:
+            logger.info(f"✅ Message sent successfully")
+        except Exception as e:
+            logger.warning(f"⚠️ Markdown failed, sending plain text: {e}")
             # Fallback to plain text if markdown fails
             await update.message.reply_text(text)
+            logger.info(f"✅ Plain text message sent successfully")
 
     async def process_with_gemini(self, content_type: str, content, user_id: int, user_info: dict) -> str:
         """Unified Gemini processing for all content types."""
@@ -226,7 +230,7 @@ Send me anything - I don't judge... much. 😏
                 max_tokens=500
             )
             
-            result = response.choices[0].message.content
+            result = response.choices[0].message.content or "No words to message."
             
             # Add response to conversation history
             self.add_to_conversation(user_id, "assistant", result)
@@ -235,13 +239,211 @@ Send me anything - I don't judge... much. 😏
             
         except Exception as e:
             logger.error(f"Error processing {content_type} with Gemini: {e}")
+            logger.error(f"Full error details: {type(e).__name__}: {str(e)}")
             return f"Well, that didn't work. Error: {str(e)}"
 
+    def extract_code_blocks(self, text: str) -> list:
+        """Extract code blocks from markdown text."""
+        # Pattern to match code blocks with optional language specifier
+        # Updated to handle both newline and non-newline cases after language
+        pattern = r'```(?:(\w+)\s*)?(.*?)```'
+        matches = re.findall(pattern, text, re.DOTALL)
+        
+        code_blocks = []
+        for language, code in matches:
+            code = code.strip()
+            if code:
+                code_blocks.append({
+                    'language': language.lower() if language else 'bash',
+                    'code': code
+                })
+        
+        return code_blocks
+
+    async def execute_code_block(self, code_block: dict) -> str:
+        """Execute a code block safely and return the result."""
+        try:
+            language = code_block['language']
+            code = code_block['code']
+            
+            # Security check - only allow certain languages/commands
+            if language not in ['bash', 'sh', 'python', 'py', 'javascript', 'js', 'node']:
+                return f"❌ Language '{language}' not supported for execution"
+            
+            # Additional security - block dangerous commands
+            dangerous_patterns = [
+                r'rm\s+-rf',
+                r'sudo',
+                r'chmod\s+777',
+                r'>/dev/null',
+                r'&\s*$',
+                r'shutdown',
+                r'reboot',
+                r'format',
+                r'mkfs',
+                r'dd\s+if=',
+                r'curl.*\|.*bash',
+                r'wget.*\|.*bash'
+            ]
+            
+            for pattern in dangerous_patterns:
+                if re.search(pattern, code, re.IGNORECASE):
+                    return f"❌ Potentially dangerous command detected: {pattern}"
+            
+            # Execute based on language
+            if language in ['bash', 'sh']:
+                # Execute bash commands
+                process = await asyncio.create_subprocess_shell(
+                    code,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    cwd=os.getcwd()
+                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                
+                output = stdout.decode('utf-8', errors='replace')
+                error = stderr.decode('utf-8', errors='replace')
+                
+                if process.returncode == 0:
+                    return f"✅ *Executed successfully:*\n```shell\n{output}\n```" if output else "✅ *Executed successfully* (no output)"
+                else:
+                    return f"❌ *Execution failed:*\n```shell\n{error}\n```"
+                    
+            elif language in ['python', 'py']:
+                # Execute Python code
+                process = await asyncio.create_subprocess_exec(
+                    'python', '-c', code,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                
+                output = stdout.decode('utf-8', errors='replace')
+                error = stderr.decode('utf-8', errors='replace')
+                
+                if process.returncode == 0:
+                    return f"✅ *Python executed successfully:*\n```shell\n{output}\n```" if output else "✅ *Python executed successfully* (no output)"
+                else:
+                    return f"❌ *Python execution failed:*\n```shell\n{error}\n```"
+                    
+            elif language in ['javascript', 'js', 'node']:
+                # Execute JavaScript/Node.js code
+                process = await asyncio.create_subprocess_exec(
+                    'node', '-e', code,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE
+                )
+                stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30)
+                
+                output = stdout.decode('utf-8', errors='replace')
+                error = stderr.decode('utf-8', errors='replace')
+                
+                if process.returncode == 0:
+                    return f"✅ *Node.js executed successfully:*\n```shell\n{output}\n```" if output else "✅ *Node.js executed successfully* (no output)"
+                else:
+                    return f"❌ *Node.js execution failed:*\n```shell\n{error}\n```"
+                    
+        except asyncio.TimeoutError:
+            return "❌ *Execution timed out* (30 second limit)"
+        except Exception as e:
+            return f"❌ *Execution error:* {str(e)}"
+
+    async def handle_run_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle @SaraTheQueenBot run command in group chats."""
+        try:
+            message_text = update.message.text or update.message.caption or ""
+            lower_message_text = message_text.lower()
+            has_run_command = "run" in lower_message_text or 'test' in lower_message_text
+            
+            # Check if this is a mention with "run" command
+            bot_username = context.bot.username
+            if f"@{bot_username}" in message_text:
+                if not has_run_command:
+                    return await self.handle_message(update, context)
+            else:
+                return
+            
+            user = update.effective_user
+            logger.info(f"🏃 Run command from {user.first_name} in chat {update.effective_chat.id}")
+            
+            # Show typing indicator
+            await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+            
+            # Extract code blocks from reply message if available, otherwise from current message
+            if update.message.reply_to_message:
+                reply_text = update.message.reply_to_message.text_markdown_v2  or update.message.reply_to_message.caption or ""
+                logger.info(f"🔍 Extracting code blocks from reply message: {reply_text}")
+                code_blocks = self.extract_code_blocks(reply_text)
+            else:
+                logger.info(f"🔍 Extracting code blocks from current message: {message_text}")
+                code_blocks = self.extract_code_blocks(message_text)
+            
+            if not code_blocks:
+                await update.message.reply_text("No code blocks found to execute! Use ```bash or ```python format.")
+                return
+            
+            confirmation = prompt("Are you sure you want to execute these code blocks? (y/n)")
+            if confirmation.lower() != "y":
+                await update.message.reply_text("Code execution cancelled!")
+                return
+            
+            # Execute each code block
+            results = []
+            for i, code_block in enumerate(code_blocks):
+                result = await self.execute_code_block(code_block)
+                results.append(f"*Block {i+1} ({code_block['language']}):*\n{result}")
+            
+            # Send results
+            final_result = "\n\n".join(results)
+            
+            # Split long messages
+            if len(final_result) > 4000:
+                parts = [final_result[i:i+4000] for i in range(0, len(final_result), 4000)]
+                for part in parts:
+                    await self.send_with_markdown(update, part)
+            else:
+                await self.send_with_markdown(update, final_result)
+                
+        except Exception as e:
+            logger.error(f"Error handling run command: {e}")
+            await update.message.reply_text(f"Error executing code: {str(e)}")
+
+    def should_respond_in_group(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+        """Check if bot should respond in group chat (only if mentioned or replying to bot)."""
+        # Always respond in private chats
+        if update.effective_chat.type == "private":
+            return True
+        
+        # In group chats, only respond if:
+        # 1. Bot is mentioned
+        # 2. Message is a reply to bot's message
+        
+        bot_username = context.bot.username
+        message_text = update.message.text or update.message.caption or ""
+        
+        # Check if bot is mentioned
+        if f"@{bot_username}" in message_text:
+            return True
+        
+        # Check if message is a reply to bot's message
+        if update.message.reply_to_message:
+            if update.message.reply_to_message.from_user.id == context.bot.id:
+                return True
+        
+        return False
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Unified message handler for all content types."""
         try:
+            logger.info(f"🎯 HANDLE_MESSAGE CALLED!")
+            
             user_id = update.effective_user.id
             user = update.effective_user
+            
+            # Check if we should respond in group chats
+            if not self.should_respond_in_group(update, context):
+                logger.info(f"🚫 Ignoring group message (not mentioned or reply)")
+                return
             
             # Comprehensive logging
             logger.info(f"=== NEW MESSAGE FROM {user.first_name} ===")
@@ -250,6 +452,9 @@ Send me anything - I don't judge... much. 😏
             logger.info(f"Message has voice: {bool(update.message.voice)}")
             logger.info(f"Message has audio: {bool(update.message.audio)}")
             logger.info(f"Message has text: {bool(update.message.text)}")
+            
+            if update.message.text:
+                logger.info(f"Text content: {update.message.text}")
             
             if update.message.document:
                 logger.info(f"Document filename: {update.message.document.file_name}")
@@ -322,17 +527,21 @@ Send me anything - I don't judge... much. 😏
                 
             elif update.message.document:
                 logger.info("📄 Processing other document")
-                result = "That's not an image, மனோஜ்."
+                result = "That's not an image."
             
             else:
                 logger.info("❓ No handler found for this message type")
             
             if result:
+                logger.info(f"✅ Sending response: {result[:100]}...")
                 await self.send_with_markdown(update, result)
+            else:
+                logger.warning("❌ No result generated for message")
             
         except Exception as e:
             logger.error(f"Error handling message: {e}")
-            await update.message.reply_text(f"Something broke, மனோஜ். {str(e)}")
+            logger.error(f"Full error details: {type(e).__name__}: {str(e)}")
+            await update.message.reply_text(f"Something broke. {str(e)}")
 
     async def debug_unhandled_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Debug handler to catch messages not handled by main handler."""
@@ -358,7 +567,13 @@ Send me anything - I don't judge... much. 😏
         # Add handlers
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("help", self.help_command))
-        application.add_handler(MessageHandler(filters.PHOTO | filters.Document.ALL | filters.VOICE | filters.AUDIO | (filters.TEXT & ~filters.COMMAND), self.handle_message))
+        
+        # Add run command handler for group chats (mentions with "run")
+        application.add_handler(MessageHandler(filters.TEXT & filters.Entity("mention"), self.handle_run_command))
+        
+        # Main message handler - simplified to catch all messages
+        application.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, self.handle_message))
+        
         # Catch-all handler for debugging
         application.add_handler(MessageHandler(filters.ALL, self.debug_unhandled_message))
 
