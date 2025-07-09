@@ -428,7 +428,9 @@ Send me anything - I don't judge... much. 😏
         # Check if message is a reply to bot's message
         if update.message.reply_to_message:
             if update.message.reply_to_message.from_user.id == context.bot.id:
-                return True
+                # skip if the msg is intended for others users
+                if not any( "mention" in entity.type and entity.offset == 0 for entity in (update.message.entities or [])):
+                    return True
         
         return False
     
