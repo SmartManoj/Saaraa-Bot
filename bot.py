@@ -223,14 +223,18 @@ Send me anything - I don't judge... much. 😏
                 })
                 # Add to conversation history
                 self.add_to_conversation(user_id, "user", content)
-            
-            response = completion(
-                model="gemini/gemini-2.5-flash",
-                messages=messages,
-                max_tokens=500
-            )
-            
-            result = response.choices[0].message.content or "No words to message."
+            for _ in range(3):
+                response = completion(
+                    model="gemini/gemini-2.5-flash",
+                    messages=messages,
+                    max_tokens=500
+                )
+                
+                result = response.choices[0].message.content 
+                if result:
+                    break
+            else:
+                result = "No words to message."
             
             # Add response to conversation history
             self.add_to_conversation(user_id, "assistant", result)
