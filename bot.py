@@ -23,10 +23,10 @@ logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 logger.addHandler(logging.StreamHandler())
 class SaaraaBot:
-    def __init__(self, bot_token: str, gemini_api_key: str):
+    def __init__(self, bot_token: str, google_api_key: str):
         self.bot_token = bot_token
-        self.gemini_api_key = gemini_api_key
-        os.environ["GEMINI_API_KEY"] = gemini_api_key
+        self.google_api_key = google_api_key
+        os.environ["GOOGLE_API_KEY"] = google_api_key
         
         # Memory system - stores conversation per user
         self.conversations = {}  # user_id: {"messages": [], "last_activity": datetime}
@@ -591,15 +591,15 @@ def main():
     """Main function to start the bot."""
     # Load environment variables
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
-    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    google_api_key = os.getenv("GOOGLE_API_KEY")
     
     if not bot_token:
         raise ValueError("TELEGRAM_BOT_TOKEN environment variable is required")
-    if not gemini_api_key:
-        raise ValueError("GEMINI_API_KEY environment variable is required")
+    if not google_api_key:
+        raise ValueError("GOOGLE_API_KEY environment variable is required")
     
     # Create and run bot
-    bot = SaaraaBot(bot_token, gemini_api_key)
+    bot = SaaraaBot(bot_token, google_api_key)
     bot.run()
 
 if __name__ == "__main__":
